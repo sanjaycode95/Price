@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Price</title>
+<style>
+:root{--bg:#10151c;--text:#eaf0f6;--mute:#7d8b9a;--up:#2ecc8f;--down:#ff5c6c;color-scheme:dark}
+@media (prefers-color-scheme:light){:root{--bg:#eef2f6;--text:#14202b;--mute:#6b7a89;--up:#0f9d63;--down:#d6384a;color-scheme:light}}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;transition:background-color .35s}
+body.up{background-color:color-mix(in srgb,var(--up) 18%,var(--bg))}
+body.down{background-color:color-mix(in srgb,var(--down) 18%,var(--bg))}
+#sym{font-size:clamp(14px,4vw,20px);font-weight:700;color:var(--mute)}
+#price{font-size:clamp(32px,14vw,96px);font-weight:800;font-variant-numeric:tabular-nums;white-space:nowrap}
+#chg{font-size:clamp(14px,4.5vw,22px);font-variant-numeric:tabular-nums;color:var(--mute)}
+#chg.pos{color:var(--up)}#chg.neg{color:var(--down)}
+#status{position:fixed;bottom:8px;right:10px;font-size:11px;color:var(--mute)}
+#dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--down);margin-right:5px}
+#dot.on{background:var(--up)}
+@media (prefers-reduced-motion:reduce){body{transition:none}}
+</style>
+</head>
+<body>
+<div id="sym">--</div>
+<div id="price">--</div>
+<div id="chg">--</div>
+<div id="status"><i id="dot"></i><span id="st">connecting</span></div>
+
+<script>
+// Change coin via URL: ?symbol=ethusdt   (add &demo=1 to test without network)
+const q = new URLSearchParams(location.search);
+const SYMBOL = (q.get("symbol") || "btcusdt").toLowerCase();
+const WS_URL = "wss://stream.binance.com:9443/ws/" + SYMBOL + "@miniTicker";
+
+const $ = id => document.getElementById(id);
+$("sym").textContent = SYMBOL.toUpperCase().replace(/USDT$/, "") + "/USDT";
+let last;
+
+function fmt(n){
+  return n >= 1000 ? n.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})
+       : n >= 1 ? n.toFixed(3) : n.toFixed(5);
+}
+
+function update(close, open){
+  $("price").textContent = "$" + fmt(close);
+  const pct = (close - open) / open * 100;
+  $("chg").textContent = (pct >= 0 ? "▲ +" : "▼ ") + pct.toFixed(2) + "%";
+  $("chg").className = pct >= 0 ? "pos" : "neg";
+  if (last !== undefined && close !== last){
+    document.body.className = close > last ? "up" : "down";
+    clearTimeout(update.t);
+    update.t = setTimeout(() => document.body.className = "", 400);
+  }
+  last = close;
+}
+
+function status(on, text){ $("dot").className = on ? "on" : ""; $("st").textContent = text; }
+
+let retry = 0;
+function connect(){
+  const ws = new WebSocket(WS_URL);
+  ws.onopen = () => { retry = 0; status(true, "live"); };
+  ws.onmessage = e => { const d = JSON.parse(e.data); update(parseFloat(d.c), parseFloat(d.o)); };
+  ws.onclose = () => { status(false, "reconnecting"); setTimeout(connect, Math.min(1000 * 2 ** retry++, 15000)); };
+  ws.onerror = () => ws.close();
+}
+
+function demo(){
+  status(true, "demo");
+  let p = 65000; const o = p;
+  setInterval(() => { p *= 1 + (Math.random() - 0.5) * 0.002; update(p, o); }, 800);
+}
+
+q.has("demo") ? demo() : connect();
+</script>
+</body>
+</html>
