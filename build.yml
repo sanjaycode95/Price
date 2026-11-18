@@ -1,0 +1,453 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate Android project
+        run: |
+          B=app/src/main
+          J=$B/java/com/example/pricewidget
+          mkdir -p $J $B/res/layout $B/res/drawable $B/res/xml $B/res/values
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "PriceWidget"
+          include ':app'
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '8.3.2' apply false }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=false
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' }
+          android {
+              namespace 'com.example.pricewidget'
+              compileSdk 34
+              defaultConfig {
+                  applicationId 'com.example.pricewidget'
+                  minSdk 26
+                  targetSdk 34
+                  versionCode 1
+                  versionName '1.0'
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          dependencies {
+              implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+          }
+          EOF
+
+          cat > $B/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <application android:label="@string/app_name" android:usesCleartextTraffic="false">
+                  <activity android:name=".MainActivity" android:exported="true"
+                      android:theme="@android:style/Theme.Material.NoActionBar">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service android:name=".PriceService" android:exported="false"
+                      android:foregroundServiceType="dataSync" />
+                  <receiver android:name=".PriceWidget" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                      </intent-filter>
+                      <meta-data android:name="android.appwidget.provider"
+                          android:resource="@xml/price_widget_info" />
+                  </receiver>
+              </application>
+          </manifest>
+          EOF
+
+          cat > $B/res/values/strings.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">Live Price</string>
+          </resources>
+          EOF
+
+          cat > $B/res/xml/price_widget_info.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+              android:minWidth="180dp"
+              android:minHeight="90dp"
+              android:updatePeriodMillis="0"
+              android:initialLayout="@layout/widget"
+              android:resizeMode="horizontal|vertical"
+              android:widgetCategory="home_screen"
+              android:description="@string/app_name" />
+          EOF
+
+          cat > $B/res/drawable/widget_bg.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <solid android:color="#10151C" />
+              <corners android:radius="18dp" />
+          </shape>
+          EOF
+
+          cat > $B/res/layout/widget.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:id="@+id/root"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:orientation="vertical"
+              android:gravity="center"
+              android:padding="10dp"
+              android:background="@drawable/widget_bg">
+              <TextView
+                  android:id="@+id/sym"
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:textSize="14sp"
+                  android:textStyle="bold"
+                  android:textColor="#9AA7B4" />
+              <TextView
+                  android:id="@+id/price"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:gravity="center"
+                  android:maxLines="1"
+                  android:textStyle="bold"
+                  android:textColor="#FFFFFF"
+                  android:autoSizeTextType="uniform"
+                  android:autoSizeMinTextSize="12sp"
+                  android:autoSizeMaxTextSize="34sp" />
+              <TextView
+                  android:id="@+id/chg"
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:textSize="14sp"
+                  android:textColor="#9AA7B4" />
+          </LinearLayout>
+          EOF
+
+          cat > $J/PriceWidget.java <<'EOF'
+          package com.example.pricewidget;
+
+          import android.app.PendingIntent;
+          import android.appwidget.AppWidgetManager;
+          import android.appwidget.AppWidgetProvider;
+          import android.content.ComponentName;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.widget.RemoteViews;
+
+          public class PriceWidget extends AppWidgetProvider {
+
+              @Override
+              public void onUpdate(Context c, AppWidgetManager m, int[] ids) {
+                  push(c);
+              }
+
+              @Override
+              public void onEnabled(Context c) {
+                  try {
+                      c.startForegroundService(new Intent(c, PriceService.class));
+                  } catch (Exception ignored) { }
+              }
+
+              static void push(Context c) {
+                  SharedPreferences sp = c.getSharedPreferences("p", Context.MODE_PRIVATE);
+                  String sym = sp.getString("symbol", "BTCUSDT").replace("USDT", "") + "/USDT";
+                  RemoteViews rv = new RemoteViews(c.getPackageName(), R.layout.widget);
+                  rv.setTextViewText(R.id.sym, sym);
+                  rv.setTextViewText(R.id.price, sp.getString("price", "Open app > Start"));
+                  rv.setTextViewText(R.id.chg, sp.getString("chg", ""));
+                  int dir = sp.getInt("dir", 0);
+                  rv.setTextColor(R.id.price, dir > 0 ? 0xFF2ECC8F : dir < 0 ? 0xFFFF5C6C : 0xFFFFFFFF);
+                  rv.setTextColor(R.id.chg, sp.getBoolean("pos", true) ? 0xFF2ECC8F : 0xFFFF5C6C);
+                  PendingIntent pi = PendingIntent.getActivity(c, 0,
+                          new Intent(c, MainActivity.class), PendingIntent.FLAG_IMMUTABLE);
+                  rv.setOnClickPendingIntent(R.id.root, pi);
+                  AppWidgetManager.getInstance(c)
+                          .updateAppWidget(new ComponentName(c, PriceWidget.class), rv);
+              }
+          }
+          EOF
+
+          cat > $J/PriceService.java <<'EOF'
+          package com.example.pricewidget;
+
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.app.Service;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.content.pm.ServiceInfo;
+          import android.os.Build;
+          import android.os.Handler;
+          import android.os.IBinder;
+          import android.os.Looper;
+
+          import org.json.JSONObject;
+
+          import java.util.Locale;
+          import java.util.concurrent.TimeUnit;
+
+          import okhttp3.OkHttpClient;
+          import okhttp3.Request;
+          import okhttp3.Response;
+          import okhttp3.WebSocket;
+          import okhttp3.WebSocketListener;
+
+          public class PriceService extends Service {
+              private static final String[] HOSTS = {
+                      "wss://stream.binance.com:9443",
+                      "wss://stream.binance.com:443",
+                      "wss://data-stream.binance.vision"
+              };
+
+              private OkHttpClient client;
+              private WebSocket ws;
+              private final Handler handler = new Handler(Looper.getMainLooper());
+              private String symbol = "BTCUSDT";
+              private int hostIdx = 0, retry = 0, gen = 0, dir = 0;
+              private boolean running = false;
+              private long lastPush = 0;
+              private double lastPrice = 0;
+
+              private final Runnable reconnect = new Runnable() {
+                  @Override public void run() { connect(); }
+              };
+
+              @Override
+              public IBinder onBind(Intent i) { return null; }
+
+              @Override
+              public int onStartCommand(Intent intent, int flags, int startId) {
+                  symbol = getSharedPreferences("p", MODE_PRIVATE).getString("symbol", "BTCUSDT");
+                  lastPrice = 0;
+                  dir = 0;
+                  startFg();
+                  if (client == null) {
+                      client = new OkHttpClient.Builder()
+                              .pingInterval(20, TimeUnit.SECONDS)
+                              .retryOnConnectionFailure(true)
+                              .build();
+                  }
+                  running = true;
+                  connect();
+                  return START_STICKY;
+              }
+
+              private void startFg() {
+                  NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                  nm.createNotificationChannel(new NotificationChannel(
+                          "price", "Live price", NotificationManager.IMPORTANCE_MIN));
+                  PendingIntent pi = PendingIntent.getActivity(this, 0,
+                          new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE);
+                  Notification n = new Notification.Builder(this, "price")
+                          .setContentTitle("Live price running")
+                          .setContentText(symbol)
+                          .setSmallIcon(android.R.drawable.ic_menu_info_details)
+                          .setContentIntent(pi)
+                          .setOngoing(true)
+                          .build();
+                  if (Build.VERSION.SDK_INT >= 29) {
+                      startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+                  } else {
+                      startForeground(1, n);
+                  }
+              }
+
+              private void connect() {
+                  if (!running) return;
+                  handler.removeCallbacks(reconnect);
+                  gen++;
+                  final int myGen = gen;
+                  if (ws != null) { ws.cancel(); ws = null; }
+                  String url = HOSTS[hostIdx % HOSTS.length] + "/ws/" + symbol.toLowerCase(Locale.US) + "@miniTicker";
+                  Request req = new Request.Builder().url(url).build();
+                  ws = client.newWebSocket(req, new WebSocketListener() {
+                      @Override public void onOpen(WebSocket w, Response r) {
+                          if (myGen == gen) retry = 0;
+                      }
+                      @Override public void onMessage(WebSocket w, String text) {
+                          if (myGen == gen) handle(text);
+                      }
+                      @Override public void onFailure(WebSocket w, Throwable t, Response r) {
+                          if (myGen == gen) scheduleReconnect();
+                      }
+                      @Override public void onClosed(WebSocket w, int code, String reason) {
+                          if (myGen == gen) scheduleReconnect();
+                      }
+                  });
+              }
+
+              private void scheduleReconnect() {
+                  if (!running) return;
+                  hostIdx++;
+                  long delay = Math.min(1000L * (1L << Math.min(retry++, 4)), 15000L);
+                  handler.removeCallbacks(reconnect);
+                  handler.postDelayed(reconnect, delay);
+              }
+
+              private static String fmt(double p) {
+                  if (p >= 1000) return String.format(Locale.US, "%,.2f", p);
+                  if (p >= 1) return String.format(Locale.US, "%.3f", p);
+                  return String.format(Locale.US, "%.5f", p);
+              }
+
+              private void handle(String text) {
+                  try {
+                      JSONObject d = new JSONObject(text);
+                      double c = Double.parseDouble(d.getString("c"));
+                      double o = Double.parseDouble(d.getString("o"));
+                      double pct = (c - o) / o * 100.0;
+                      if (lastPrice > 0) {
+                          if (c > lastPrice) dir = 1;
+                          else if (c < lastPrice) dir = -1;
+                      }
+                      lastPrice = c;
+                      SharedPreferences.Editor e = getSharedPreferences("p", MODE_PRIVATE).edit();
+                      e.putString("price", "$" + fmt(c));
+                      e.putString("chg", (pct >= 0 ? "\u25B2 +" : "\u25BC ") + String.format(Locale.US, "%.2f", pct) + "%");
+                      e.putBoolean("pos", pct >= 0);
+                      e.putInt("dir", dir);
+                      e.apply();
+                      long now = System.currentTimeMillis();
+                      if (now - lastPush >= 300) {
+                          lastPush = now;
+                          PriceWidget.push(this);
+                      }
+                  } catch (Exception ignored) { }
+              }
+
+              @Override
+              public void onDestroy() {
+                  running = false;
+                  gen++;
+                  handler.removeCallbacksAndMessages(null);
+                  if (ws != null) ws.cancel();
+                  super.onDestroy();
+              }
+          }
+          EOF
+
+          cat > $J/MainActivity.java <<'EOF'
+          package com.example.pricewidget;
+
+          import android.Manifest;
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.graphics.Color;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.widget.Button;
+          import android.widget.EditText;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+
+          public class MainActivity extends Activity {
+              @Override
+              protected void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
+                  }
+                  final SharedPreferences sp = getSharedPreferences("p", MODE_PRIVATE);
+
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setPadding(48, 120, 48, 48);
+                  root.setBackgroundColor(0xFF10151C);
+
+                  TextView title = new TextView(this);
+                  title.setText("Live Price Widget");
+                  title.setTextSize(24);
+                  title.setTextColor(Color.WHITE);
+
+                  final EditText et = new EditText(this);
+                  et.setText(sp.getString("symbol", "BTCUSDT"));
+                  et.setTextColor(Color.WHITE);
+                  et.setHint("Coin, e.g. BTCUSDT");
+                  et.setHintTextColor(0xFF7D8B9A);
+
+                  Button start = new Button(this);
+                  start.setText("Start live updates");
+                  Button stop = new Button(this);
+                  stop.setText("Stop");
+
+                  TextView help = new TextView(this);
+                  help.setText("1. Tap Start.\n2. Long-press the home screen > Widgets > Live Price.\n3. Phone Settings > Apps > Live Price > Battery > Unrestricted, so updates keep running.");
+                  help.setTextColor(0xFF9AA7B4);
+                  help.setPadding(0, 48, 0, 0);
+
+                  start.setOnClickListener(v -> {
+                      String s = et.getText().toString().trim().toUpperCase();
+                      if (s.isEmpty()) s = "BTCUSDT";
+                      sp.edit().putString("symbol", s).putString("price", "...").putString("chg", "").apply();
+                      PriceWidget.push(this);
+                      startForegroundService(new Intent(this, PriceService.class));
+                  });
+                  stop.setOnClickListener(v -> stopService(new Intent(this, PriceService.class)));
+
+                  root.addView(title);
+                  root.addView(et);
+                  root.addView(start);
+                  root.addView(stop);
+                  root.addView(help);
+                  setContentView(root);
+              }
+          }
+          EOF
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PriceWidget-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Publish release
+        continue-on-error: true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.run_number }}
+          name: Live Price APK ${{ github.run_number }}
+          files: app/build/outputs/apk/debug/app-debug.apk
